@@ -1,0 +1,49 @@
+name: SFS CI
+
+# Lightweight SmartFlow Systems smoke lane. The upstream test matrix in
+# tests.yml is the real gate; this lane gives the SFS ecosystem a consistent
+# "SFS CI" status check across smartflow-systems repos. Requires no secrets.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sfs-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Lint SFS scripts
+        run: |
+          set -euo pipefail
+          bash -n sfs/setup.sh sfs/health-check.sh
+          command -v shellcheck >/dev/null && shellcheck sfs/*.sh || true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install core dependencies
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e .
+
+      - name: Import smoke check
+        run: |
+          source .venv/bin/activate
+          python -c "import hermes_constants, hermes_time, utils"
