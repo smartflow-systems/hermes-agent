@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -2449,6 +2451,42 @@ def _parse_model_ids(resp: "Any") -> List[str]:
     return ids
 
 
+def _is_safe_outbound_base_url(raw_url: str) -> bool:
+    """Allow only http(s) URLs with non-local, non-private resolved targets."""
+    try:
+        parsed = urllib.parse.urlparse(raw_url.strip())
+    except Exception:
+        return False
+
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host or host == "localhost":
+        return False
+
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except Exception:
+        return False
+
+    for info in infos:
+        try:
+            ip_text = info[4][0]
+            ip_obj = ipaddress.ip_address(ip_text)
+        except Exception:
+            return False
+        if (
+            ip_obj.is_loopback
+            or ip_obj.is_private
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            return False
+    return True
+
+
 @app.post("/api/providers/validate")
 async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     """Live-probe a provider credential before it's saved.
@@ -2471,6 +2509,12 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # ids the endpoint advertises (OpenAI ``/v1/models`` shape) so the GUI can
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
+        if not _is_safe_outbound_base_url(value):
+            return {
+                "ok": False,
+                "reachable": False,
+                "message": "Endpoint URL is not allowed. Use a public http(s) host.",
+            }
         url = value.rstrip("/") + "/models"
         try:
             with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
